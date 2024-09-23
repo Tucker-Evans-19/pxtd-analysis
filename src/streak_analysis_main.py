@@ -29,7 +29,7 @@ dist = 3.1 # cm
 diagnostic = 'PTD' # diagnostic type (ntd or ptd)
 sg_len = 20 # savitsky golay parameter
 sg_order = 3
-runs = 30
+runs = 5
 
 # The relevant delays for PTD (they are approximately 1 ns apart, but not exactly)
 fidu_names = ['PTD-0','PTD-1','PTD-2','PTD-3','PTD-4','PTD-5','PTD-6', 'PTD-7','PTD-8','PTD-9','PTD-10','PTD-11','PTD-12','PTD-13','PTD-14','PTD-15']
@@ -83,7 +83,7 @@ for reaction in reactions:
     E, std = ba.ballabio_mean_std(reaction, reaction_temps[reaction])
     Emean.append(E)
     Estd.append(std)
-tofs.append(dist/td.get_pop_velocities(reaction, E))
+    tofs.append(dist/td.get_pop_velocities(reaction, E))
 
 tofs_dict = dict(zip(reactions, tofs))
     
@@ -155,8 +155,9 @@ with open('ptd_timing_report_mi22a.txt', 'a') as time_file:
     line += '\n'
     time_file.writelines(line)
 '''
-# getting the real time axis (corrected for the delays)
-time = time + t0_minus_fid0 + 705 + float(ptd_delay_dict[delay_box.strip(' ')])  - float(ptd_delay_dict['PTD-1']) - (tofs_dict['DTn']) # p510 first fiducial with teh 1 ns trim fiber in place
+# getting the real time axis (corrected for the delays but not the tof)
+print(f't0-fid0: {t0_minus_fid0}')
+time = time + t0_minus_fid0 - 705 + float(ptd_delay_dict[delay_box.strip(' ')])  - float(ptd_delay_dict['PTD-1']) # p510 first fiducial with teh 1 ns trim fiber in place
 # TODO get the T0 from the laser in here!!!
 
 # plotting the tim traces for each of the channels
@@ -221,9 +222,14 @@ IRF = td.pxtd_conv_matrix(time) # convolution matrix for the PTD and NTD scintil
 channel_ls_list = []
 channel_averages = []
 channel_stds = []
+channel_peak_inds = []
+channel_peak_times = []
+channel_reactions = []
 
 for channel in range(num_channels):
+    channel_reactions.append([])
     channel_ls_list.append([])
+    channel_peak_times.append([])
     for i in tqdm(range(runs)):
         c_noisy = channel_norms[channel] + np.random.normal(size = channel_norms[channel].size, scale = variances[channel]**.5)
         c_smooth = signal.savgol_filter(c_noisy, sg_len, sg_order)
@@ -231,12 +237,86 @@ for channel in range(num_channels):
         channel_ls_list[-1].append(c_ls)
     print(np.array(channel_ls_list)[channel, :,:].shape)
     channel_averages.append(np.sum(np.array(channel_ls_list)[channel, : ,:], axis = 0)/runs) # taking the average of all of runs
+    channel_peak_inds.append(find_peaks(channel_averages[-1], height = 0.5 * np.max(channel_averages[-1]), distance = 50)[0]) # adding the most recent list of peaks
+    print(channel_peak_inds)
+    channel_peak_times[-1] = [time[int(index)] for index in channel_peak_inds[-1]] # getting the times that correspond to each of the peaks
     channel_stds.append(np.std(np.array(channel_ls_list)[channel, : ,:], axis = 0))
-    
+
 fig, ax = plt.subplots(num_channels,1)
 for channel in range(num_channels):
     ax[channel].plot(time, channel_averages[channel], zorder = 10)
     ax[channel].fill_between(time, channel_averages[channel] - channel_stds[channel], channel_averages[channel] + channel_stds[channel], alpha = .1, zorder = 10)
+
+### TOF CORRECTIONS ####################################################################################################################################################
+# Logic here: we have called out all of the reactions that might show up on each channel. We should be able to forward model each of their respective emissions         
+# making use of the simplifying assumptions that (1) the temperature is the same all the way through the burn, (2) the effects of compression are minimal over
+# the course of the burn, and (3) that the initial distribution is maxwellian with central energies and std. corresponding to the ballabio calculation of the first
+# two moments for nuclear products at a given temperature. All of these effects are coded into the td_streak library. the broadening and time of flight can be
+# captured nominally in matrix form, permitting a least squares deconvolution if noise is sufficiently reduced. A more optimal choice in the future will be to
+# use MCMC or similar methods to understand the potential incurred in the fitting process. 
+#########################################################################################################################################################################
+
+max_peak_spread = 200 # the maximum likely distance between any two peak emissions
+
+# checking which reactions are on each channel:
+num_reactions = len(reactions)
+for r in range(num_reactions):
+    print(f'reaction number: {r}')
+    for channel in range(num_channels):
+        print(f'channel: {channel +1}')
+        print(f'reaction_channels: {reaction_channels[r]}')
+        if str(channel+1) in reaction_channels[r]:
+            print(f'{channel + 1} is in {reaction_channels[r]}') 
+            channel_reactions[channel].append(reactions[r])
+        else:
+            print(f'{channel + 1} is not in {reaction_channels[r]}') 
+print(f'channel reactions: {channel_reactions}') 
+
+# we can find a really rough bang time if we assume that all of the peak emissions happen tof before the peak oberved signal
+rough_BTs = []
+for channel in range(num_channels):
+    channel_tofs = [tofs_dict[r] for r in channel_reactions[channel]] # getting tof for each reaction
+    ordered_tofs = natsorted(channel_tofs)
+    print(f'ordered tofs: {ordered_tofs}')
+    print(f'channel peak times: {channel_peak_times}')
+    rough_BTs.append(np.array(channel_peak_times[channel]) - np.array(ordered_tofs)) # estimating the bang time by just assuming that we can subtract off the tof and call it good (very rough)
+
+print(f'Rough bang times: {rough_BTs}')
+
+# for 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 if False:
     p510_time, p510_data = get_p510_data(p510_dir + p510_files[str(shot_num)])

@@ -1,1 +1,2 @@
-shot number, diagnostic, channels, filtering, scint thickness, 
+shot number,diagnostic,num channels,filtering,scint thickness,ptd delay,reactions,nosecone dist,temperatures,reaction channels,
+103741, PTD, 2, ||||, 1, PTD-1, [DTn DDn D3Hep], 3.1, [5.5 5.5 5.5], [1;1;2]

@@ -8,7 +8,6 @@ import emcee
 import plasma_analysis.tdstreak as td
 import os
 import matplotlib.pyplot as plt
-import pxtd_forward as pfor
 import scipy.ndimage as nd
 import re
 from scipy import signal
@@ -23,13 +22,16 @@ from scipy.optimize import curve_fit
 from scipy.signal import find_peaks
 import csv
 import argparse
+from scipy.signal import convolve
+from scipy.linalg import convolution_matrix
+import pxtd_forward_model as pfor
 
 # default variable values
 dist = 3.1 # cm
 diagnostic = 'PTD' # diagnostic type (ntd or ptd)
-sg_len = 20 # savitsky golay parameter
+sg_len = 10 # savitsky golay parameter
 sg_order = 3
-runs = 5
+runs = 60
 
 # The relevant delays for PTD (they are approximately 1 ns apart, but not exactly)
 fidu_names = ['PTD-0','PTD-1','PTD-2','PTD-3','PTD-4','PTD-5','PTD-6', 'PTD-7','PTD-8','PTD-9','PTD-10','PTD-11','PTD-12','PTD-13','PTD-14','PTD-15']
@@ -39,8 +41,11 @@ ptd_delay_dict = dict(zip(fidu_names, fidu_delays))
 # parsing the input arguments:
 parser = argparse.ArgumentParser()
 parser.add_argument('shotnum')
+parser.add_argument('-d', '--diagnostic', default = 'PTD')
+parser.add_argument('-p', '--plotting', default = True)
 args = parser.parse_args()
 shotnum  = args.shotnum
+plotting = args.plotting
 print(f'Inputted shotnum: {shotnum}') 
 
 # some functions for pulling apart some of the input file values
@@ -86,6 +91,9 @@ for reaction in reactions:
     tofs.append(dist/td.get_pop_velocities(reaction, E))
 
 tofs_dict = dict(zip(reactions, tofs))
+E_dict = dict(zip(reactions, Emean))
+Estd_dict = dict(zip(reactions, Estd))
+
     
 # pulling in the notch correction
 corrections = []
@@ -244,8 +252,10 @@ for channel in range(num_channels):
 
 fig, ax = plt.subplots(num_channels,1)
 for channel in range(num_channels):
-    ax[channel].plot(time, channel_averages[channel], zorder = 10)
-    ax[channel].fill_between(time, channel_averages[channel] - channel_stds[channel], channel_averages[channel] + channel_stds[channel], alpha = .1, zorder = 10)
+    ax[channel].plot(time, channel_averages[channel], zorder = 10, color = 'maroon')
+    ax[channel].fill_between(time, channel_averages[channel] - channel_stds[channel], channel_averages[channel] + channel_stds[channel], alpha = .1, zorder = 10, color = 'maroon')
+    ax[channel].vlines(channel_peak_times[channel], ymin = 0, ymax = channel_averages[channel].max(), color = 'black', linestyle = '--')
+    
 
 ### TOF CORRECTIONS ####################################################################################################################################################
 # Logic here: we have called out all of the reactions that might show up on each channel. We should be able to forward model each of their respective emissions         
@@ -282,153 +292,127 @@ for channel in range(num_channels):
     rough_BTs.append(np.array(channel_peak_times[channel]) - np.array(ordered_tofs)) # estimating the bang time by just assuming that we can subtract off the tof and call it good (very rough)
 
 print(f'Rough bang times: {rough_BTs}')
+rough_BT_overall = rough_BTs[0][0]
 
-# for 
+# now we want to try and fit an emission history to each of the histories using the constraint that the emission should all happen within 
+# the max spread of the rough bang times that we found above
 
+# we are first going to interpolate every channels signal to a regular grid
+time_res = 20
+buffer = 400 # this is a buffer on the left so the the initial gaussian is not cut off
 
+time_interp = np.linspace(0 - buffer, time.max(), int((time.max() + buffer)/time_res))
+channels_interp = []
+for channel in range(num_channels):
+    channels_interp.append(np.interp(time_interp, time, channel_averages[channel]))
 
+fig, ax = plt.subplots()
+for channel in range(num_channels):
+    ax.plot(time_interp, channels_interp[channel])
+ax.set_xlabel('Time (ps)')
+ax.set_ylabel('Channel deconvolution (ps)')
 
+#given the specified reaction temperatures, we can define a green's function corresponding to emission during a single time step
+spectra = []
+time_traces = []
+tof_matrices = []
+for channel in range(num_channels):
+    spectra.append([])
+    time_traces.append([])
+    tof_matrices.append([])
+    for reaction in channel_reactions[channel]:
+        spectra[-1].append(td.synth_spec_gauss(reaction, reaction_temps[reaction], num_particles = 20000)[0])
+        time_trace = td.time_trace_at_dist(dist, reaction, spectra[-1][-1], birth_time = 0, time_bins = time_interp - np.min(time_interp))[1]
+        time_traces[-1].append(time_trace)
+        tof_matrices[-1].append(convolution_matrix(time_trace, time_interp.size, mode = 'full')[:time_interp.size, :])
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-if False:
-    p510_time, p510_data = get_p510_data(p510_dir + p510_files[str(shot_num)])
-    p510_time += t0[str(shot_num)]
-    
-    ax0_laser = ax[0].twinx()
-    ax1_laser = ax[1].twinx()
-
-    ax0_laser.plot(p510_time, p510_data, c = 'k', alpha = 1, zorder = 0)
-    ax1_laser.plot(p510_time, p510_data, c = 'k', alpha = 1, zorder = 0) 
-
-    ax0_laser.set_ylim(0, np.max(p510_data)*1.1)
-    ax1_laser.set_ylim(0, np.max(p510_data)*1.1)
-    
-    for i in range(2):
-        ax[i].set_xlim([-100, 1200])
-        ax[i].set_ylim([0, 10])
-
-    ax[1].set_xlabel('Time (ps)')
-    ax[0].set_ylabel('Deconvolution')
-    ax[1].set_ylabel('Deconvolution')
-
-    plt.suptitle(str(shot_num))
-    plt.savefig(f'ptd_decon_{shot_num}.png')
-    #plt.close()
-
-    
-    # c1_average and c1_std describe the most likely history and the error on it.
-    # we can now fit a gaussian to get a bang time:
-    p1, prop1 = find_peaks(c1_average, height = np.max(c1_average)/5, distance = 50)
-    p2, prop2 = find_peaks(c2_average, height = np.max(c2_average)/5, distance = 50)
-
-    len1 = (c1_average).size
-    len2 = c2_average.size 
-    
-    popts1 = []
-    popts2 = []
-    perrs1 = []
-    perrs2 = []
-
+if plotting:
     fig, ax = plt.subplots()
-    ax.scatter(time, c1_average, c = 'k')
-    window = 24
-    half_window = int(window/2)
-    sys_err = 40
-
-    for p in p1:
-        peak = int(np.round(p))
-        ind_range = np.arange(peak-half_window, peak+half_window)
-        popt1, pcov1 = curve_fit(pfor.gaussian, time[peak-half_window:peak+half_window], c1_average[peak-half_window:peak+half_window], p0=[5, time[peak], 200], sigma = c1_std[peak-half_window:peak+half_window])
-        #popt1, pcov1 = curve_fit(pfor.gaussian, time[peak-half_window:peak+half_window], c1_average[peak-half_window:peak+half_window], p0=[5, time[peak], 200])
-        popts1.append(popt1)
-        print(pcov1)
-        print(np.diag(pcov1))
-        print(np.sqrt(np.diag(pcov1)))
-        print(np.sqrt(np.diag(pcov1))[1])
-        perrs1.append(np.sqrt(np.diag(pcov1))[1] + sys_err)
-        ax.plot(time[peak-half_window:peak+half_window], pfor.gaussian(time[peak-half_window:peak+half_window], popt1[0], popt1[1], popt1[2]), color= 'goldenrod')
+    for channel in range(num_channels):
+        for trace in time_traces[channel]:
+            ax.plot(time_interp[:-1], trace)
+fig, ax = plt.subplots()
+ax.contourf(tof_matrices[0][-1])
     
+# we generate some reasonable guesses at the initial emission histories:
+def gaussian(x, a, b, c):
+    return a*np.exp(-(x-b)**2/(2*c**2))
+
+emission_histories = []
+for channel in range(num_channels):
+    emission_histories.append([])
+    for rind, reaction in enumerate(channel_reactions[channel]):
+        emission_histories[-1].append(gaussian(time_interp, 100, 1000, 100))
+
+fig, ax = plt.subplots()
+for channel in range(num_channels):
+    for rind, reaction in enumerate(channel_reactions[channel]):
+        ax.plot(time_interp, emission_histories[channel][rind], label = reaction, linestyle = '--')
+        ax.plot(time_interp, np.matmul( tof_matrices[channel][rind], emission_histories[channel][rind]),label = reaction)
+    ax.legend()
+
+reaction_inds = []
+reaction_signals = []
+decon_noise_std = np.std(channels_interp[channel] - signal.savgol_filter(channels_interp[channel], 15, 3))
+for channel in range(num_channels):
     fig, ax = plt.subplots()
-    ax.scatter(time, c2_average, c = 'k')
+    ax.plot(channels_interp[channel], color = 'k')
 
-    for p in p2:
-        peak = int(np.round(p))
-        ind_range = np.arange(peak-half_window, peak+half_window)
-        popt2, pcov2 = curve_fit(pfor.gaussian, time[peak-half_window:peak+half_window], c2_average[peak-half_window:peak+half_window], p0=[5, time[peak], 200], sigma = c2_std[peak-half_window:peak+half_window])
-        #popt2, pcov2 = curve_fit(pfor.gaussian, time[peak-half_window:peak+half_window], c2_average[peak-half_window:peak+half_window], p0=[5, time[peak], 200])
-        popts2.append(popt2)
-        print(pcov2)
-        perrs2.append(np.sqrt(np.diag(pcov2))[1] + sys_err)
+    reaction_inds.append([])
+    reaction_signals.append([])
+    for reaction in channel_reactions[channel]:
+        reaction_clicks = plt.ginput(2)
+        rclick_l = int(reaction_clicks[0][0])
+        rclick_r = int(reaction_clicks[1][0])
+        reaction_inds[-1].append([rclick_l, rclick_r])
+        reaction_signal = np.copy(channels_interp[channel])
+        reaction_signal[:rclick_l] *= 0
+        reaction_signal[rclick_r:] *= 0
+        reaction_signals[-1].append(reaction_signal)
+    plt.close()
+
+fig, ax = plt.subplots()
+for channel in range(num_channels):
+    for reaction_signal in reaction_signals[channel]:
+        ax.plot(reaction_signal)
         
-        ax.plot(time[peak-half_window:peak+half_window], pfor.gaussian(time[peak-half_window:peak+half_window], popt2[0], popt2[1], popt2[2]), color= 'goldenrod')
-    popt1_array = np.array(popts1)
-    popt2_array = np.array(popts2)
-    perr1_array = np.array(perrs1)
-    perr2_array = np.array(perrs2)
-    '''
-    peak_times1 = natsorted(popt1_array[:,1])
-    peak_times2 = natsorted(popt2_array[:,1])
-    '''
-    peak_times1 = popt1_array[:,1]
-    peak_times2 = popt2_array[:,1]
+ehists = []
+ehist_unc = []
+tof_decons = []
+for channel in range(num_channels):
+    ehists.append([])
+    ehist_unc.append([])
+    tof_decons.append([])
+    for rind, reaction in enumerate(channel_reactions[channel]):
+        tof_decons[-1].append([])
+        for run in tqdm(range(runs)):
+            noise = np.random.normal(loc = 0 , scale = decon_noise_std, size = time_interp.size)
+            smoothed_signal = signal.savgol_filter(reaction_signals[channel][rind] + noise, 15, 3)
+            tof_decons[-1][-1].append(so.nnls(tof_matrices[channel][rind], smoothed_signal)[0])
+        ehists[-1].append(np.average(np.array(tof_decons[channel][rind]), axis = 0))
+        ehist_unc[-1].append(np.std(np.array(tof_decons[channel][rind]), axis = 0))
+    #ehists[-1].append(so.nnls(tof_matrices[channel][rind], signal.savgol_filter(reaction_signals[channel][rind], 20, 3))[0])
 
-    # TODO : calculate the temperatures for each of the species
-    
-    peak_times1[0] -= tofs_dict['DTn']
-    try:
-        peak_times1[1] -= tofs_dict['DDn']
-    except(IndexError):
-        pass
-    peak_times2[0] -= tofs_dict['D3Hep']
-
-    with open('ptd_bts_mi22a_c1.txt', 'a') as ptd_file:
-        line  = f'{shot_num} '
-        for element in range(len(peak_times1)):
-            line += str(peak_times1[element]) + ' ' + str(perr1_array[element]) + ' '
-
-        ptd_file.writelines(line + '\n')
-
-    print(peak_times1)
-    print(peak_times2)
-    #plt.close()
-
+fig, ax = plt.subplots()
+for channel in range(num_channels):
+    for rind, reaction in enumerate(channel_reactions[channel]):
+        ax.plot(time_interp, ehists[channel][rind], label = reaction)
+        ax.fill_between(time_interp,ehists[channel][rind] - ehist_unc[channel][rind], ehists[channel][rind] + ehist_unc[channel][rind], alpha = .2)
+ax.legend()
     
 
 
-        
+'''
+def channel_response_score(em_histories):
+    error = 0
+    for channel in range(num_channels):
+        s = np.zeros_like(time_interp)
+        for rind, reaction in enumerate(channel_reactions[channel]):
+            s += np.matmul(em_histories[channel][rind], tof_matrices[channel][rind])
+        error += np.sum((channels_interp[channel] - s)**2)
+    return error
 
-
-
+'''
 
 
 plt.show()
-
-

@@ -29,12 +29,13 @@ import pxtd_forward_model as pfor
 from scipy.stats import laplace
 from plot_laser_data import get_laser_data
 from scipy.sparse import identity
+from scipy.optimize import least_squares
 
 # default variable values
 dist = 9.1 # cm
 diagnostic = 'PTD' # diagnostic type (ntd or ptd)
-sg_len = 50 # savitsky golay parameter, 10
-sg_order = 6
+sg_len = 30 # savitsky golay parameter, 10
+sg_order = 4
 #runs = 30
 ptd_calib_delay = -640
 ntd_calib_delay = -2500
@@ -43,7 +44,7 @@ lam = 0.001
 max_time_allowed = 6600
 max_emission_time = 4300
 subtracting_background = False
-gamma = 10 # regularization term
+gamma = 30 # regularization term
 # -2606
 
 ### PTD and NTD Delay Boxes ---------------------------------------------
@@ -72,6 +73,7 @@ shotnum  = args.shotnum
 plotting = args.plotting
 runs = int(args.runs)
 dist = float(args.dist)
+diagnostic = args.diagnostic
 print(f'Inputted shotnum: {shotnum}') 
 
 # some functions for pulling apart some of the input file values
@@ -138,7 +140,7 @@ corrections = np.array(corrections)
 #pulling in the streak image information for the shot number in question
 directory = '../input/streak_data/'
 files = natsorted(os.listdir(directory))
-files = [file for file in files if (shotnum in file) and ('.h5' in file) and (diagnostic in file)]
+files = [file for file in files if (shotnum in file) and ('.h5' in file) and (diagnostic in file or diagnostic.lower() in file)]
 
 if len(files) == 0:
     print('There is no data file with the specified shot number...')
@@ -190,15 +192,26 @@ if 'PTD' in diagnostic:
     bg_lineout = bg_model(np.arange(len(bg_lineout)), bg_params[0], bg_params[1], bg_params[2], bg_params[3]) 
         
 elif 'NTD' in diagnostic:
+    sg_len = 20 # savitsky golay parameter
+    sg_order = 2
     print('....Pulling data from NTD image')
     # plotting out the full image
     fig, ax = plt.subplots()
     td.show_ntd_image(directory+file)
     time, centers, fid_lineout = td.get_ntd_fid_timing(directory + file)
+    time  = time[30:1048]
+    fid_lineout  = fid_lineout[30:1048]
     # TODO add the background lineout for the ntd setup here....
-    lineouts = [td.ntd_lineout(directory + file, channel_center = 550, channel_width = 500)]
+    if num_channels == 4:
+        raw_lineouts = td.ntd_4ch_lineouts(directory + file)
+        lineouts = []
+        for lineout in raw_lineouts:
+            lineouts.append(lineout[30:1048])
+    else:
+        lineouts = [td.ntd_lineout(directory + file, channel_center = 550, channel_width = 500)]
+    
     print('....Background channel extracted')
-    bg_lineout = td.ntd_lineout(directory+file, 950, channel_width = 30)
+    bg_lineout = td.ntd_lineout(directory+file, 950, channel_width = 30)[30:1048]
     bg_lineout = signal.savgol_filter(bg_lineout, sg_len, sg_order)
 
 #plt.show()
@@ -211,6 +224,7 @@ for lineout in lineouts:
     else:
         print('....No background subtraction')
     if 'PTD' in diagnostic:
+        print('....correcting for ptd notch')
         lineout /= corrections
 # pulling in the p510 data that has already been analyzed
 with open('../results/p510_summary.txt', 'r') as p510_file:
@@ -259,11 +273,8 @@ ax.set_xlabel('pixels')
 plt.text(1,1,f'delta t: {deltat}')
 
 # plotting the lineouts
-data_array_full = np.array(lineouts)
-#data_array_full = data_array_full[:,50:500]
-#time = time[50:500]
+data_array = np.array(lineouts)
 time_full = np.array(time) 
-data_array = data_array_full[:,::]
 time = time[::]
 
 # pulling each of the channels
@@ -312,16 +323,17 @@ if num_channels > 1:
         c_noisy = channel_norms[channel]
         c_smooth = signal.savgol_filter(c_noisy, sg_len, sg_order)
         c_ls, res, _, _ = sl.lstsq(IRF, c_smooth)
-        ax[channel].plot(c_noisy)
-        ax[channel].plot(c_smooth)
+        ax[channel].plot(c_noisy, c = 'black')
+        ax[channel].plot(c_smooth, c = 'red')
         ax[channel].plot(c_ls)
+        ax[channel].set_title(f'smoothing, channel {channel}')
 else: 
     c_noisy = channel_norms[0]
     c_smooth = signal.savgol_filter(c_noisy, sg_len, sg_order)
     c_ls, _, _, _ = sl.lstsq(IRF, c_smooth)
     ax.plot(c_noisy)
     ax.plot(c_smooth)
-
+plt.show()
 # these variables will end up holding the deconvolution of the scintillator response
 channel_ls_list = []
 channel_averages = []
@@ -332,6 +344,7 @@ channel_reactions = []
 channel_xi2 = []
 
 fig, ax = plt.subplots()
+
 for channel in range(num_channels):
     channel_reactions.append([])
     channel_ls_list.append([])
@@ -341,16 +354,16 @@ for channel in range(num_channels):
         c_noisy = channel_norms[channel] + np.random.laplace(size = channel_norms[channel].size, scale = 1*variances[channel]**.5)
         c_smooth = signal.savgol_filter(c_noisy, sg_len, sg_order)
         c_ls, res, _, _ = sl.lstsq(IRF, c_smooth)
+        #def loss(x):
+        #    return np.sum((np.matmul(IRF, x) - c_smooth)**2 + gamma * np.var(c_smooth))
+        #c_ls = so.minimize(loss, c_ls).x
         #c_ls, _= so.nnls(IRF, c_smooth)
         channel_ls_list[-1].append(c_ls)
-        channel_xi2[-1].append(np.sum(res)/np.var(c_smooth))
-        
         ax.plot(c_smooth, c = 'r', alpha = .2)
         ax.plot(np.matmul(IRF, c_ls), c = 'black', alpha = .2) 
 
-    print(np.array(channel_ls_list)[channel, :,:].shape)
-    print(channel_xi2[-1]) 
     channel_averages.append(np.sum(np.array(channel_ls_list)[channel, : ,:], axis = 0)/runs) # taking the average of all of runs
+    ax.plot(np.matmul(IRF, channel_averages[-1]), linestyle = 'None', marker = 'o', color = 'blue')
     #channel_averages.append(np.sum(np.array(channel_ls_list)[channel, : ,:] * np.expand_dims(np.array(channel_xi2)[channel,:]**-1 + .001, axis = 1), axis = 0)/runs) # taking the average of all of runs
     channel_peak_inds.append(find_peaks(channel_averages[-1], height = 0.3 * np.max(channel_averages[-1]), distance = 50)[0]) # adding the most recent list of peaks
     print(channel_peak_inds)
@@ -359,6 +372,7 @@ for channel in range(num_channels):
     #plt.show()
 
 # plotting the deconvolutions for the scintillator and camera responses:
+        
 fig, ax = plt.subplots(num_channels,1)
 if num_channels >1:
     for channel in range(num_channels):
@@ -438,7 +452,7 @@ rough_BT_overall = rough_BTs[0][0]
 
 # we are first going to interpolate every channels signal to a regular grid
 time_res = 10
-buffer = 400 # this is a buffer on the left so the the initial gaussian is not cut off
+buffer = 0 # this is a buffer on the left so the the initial gaussian is not cut off
 time_interp = np.linspace(0 - buffer, time.max() + buffer, int((time.max() + buffer)/time_res))
 time_interp = np.linspace(0 - buffer, max_time_allowed, int((max_time_allowed + buffer)/time_res))
 channels_interp = []
@@ -612,8 +626,6 @@ for channel in range(num_channels):
         #decon_mat = nd.gaussian_filter(tof_matrices[channel][rind], 40/(2.355*time_res), axes = 0)
         reaction_filter = (reaction_signals[channel][rind]>0)
         A = tof_matrices[channel][rind]
-        def l2_regularized(x):
-            return np.sum(np.abs(np.matmul(A,x).T - smoothed_signal)*reaction_filter + np.abs(x)*gamma)
         for run in tqdm(range(runs)):
             try:
                 #noise = np.random.normal(loc = 0 , scale = decon_noise_std, size = time_interp.size)
@@ -632,9 +644,11 @@ for channel in range(num_channels):
                 tof_decons[-1][-1].append(sl.lstsq(A, smoothed_signal)[0])
 
                 # LEAST SQUARES REGULARIZED
+                def l2_regularized(x):
+                    return np.sum(np.abs(np.matmul(A,x).T - smoothed_signal) + np.var(x)*gamma)
                 #x0 = sl.lstsq(tof_matrices[channel][rind], smoothed_signal)[0]
                 #x0 = np.zeros_like(smoothed_signal)
-                #tof_decons[-1][-1].append(so.minimize(l2_regularized, x0, method = 'BFGS').x)
+                #tof_decons[-1][-1].append(so.minimize(l2_regularized, x0).x)
             except(np.linalg.LinAlgError):
                 pass
             except(RuntimeError):

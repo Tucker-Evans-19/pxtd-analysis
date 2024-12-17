@@ -35,15 +35,15 @@ from scipy.optimize import least_squares
 dist = 9.1 # cm
 diagnostic = 'PTD' # diagnostic type (ntd or ptd)
 sg_len = 30 # savitsky golay parameter, 10
-sg_order = 4
-#runs = 30
+sg_order = 5
+
+#time calibration delays
 ptd_calib_delay = -640
 ntd_calib_delay = -2500
-regularizing = True
-lam = 0.001
+
 max_time_allowed = 6600
 max_emission_time = 4300
-subtracting_background = False
+subtracting_background = True
 gamma = 30 # regularization term
 # -2606
 
@@ -87,6 +87,11 @@ def str2multilist(string):
     lists = string.strip(' []').split(';')
     return [l.split(' ') for l in lists]
 
+
+
+
+
+
 # checking through all of the shots on the input list to see if one matches
 shots_available = []
 with open('../input/shot_list.csv', 'r') as shot_file:
@@ -107,6 +112,11 @@ with open('../input/shot_list.csv', 'r') as shot_file:
             num_channels = int(line['num channels'])
             delay_box = str(line['ptd delay'])
             print(f'This analysis is for {diagnostic} at {dist} cm with {num_channels}, using delay box {delay_box} and looking at the following reactions: {reactions}')
+
+
+
+
+
 
 # TOF CALCULATIONS -------------------------------------------------------
 # determining the time of flight corrections
@@ -129,7 +139,12 @@ for reaction in reactions:
 tofs_dict = dict(zip(reactions, tofs))
 E_dict = dict(zip(reactions, Emean))
 Estd_dict = dict(zip(reactions, Estd))
-    
+
+
+
+
+
+
 # pulling in the notch correction for PTD (there is a notch in the response of the camera. scratch damage?)
 corrections = []
 with open('ptd_notch_correction.txt', 'r') as nfile:
@@ -150,31 +165,45 @@ elif len(files) >= 2:
 else:
     file = files[0]
 
+
+
+
+
+
 # ANALYSIS ROUTINES: -----------------------------------------------------
 # now we have to decide which analysis routines to use:
 # PTD: -------------------------------------------------------------------
 print(f'Diagnostic in use is {diagnostic}')
 print('PULLING IN THE DATA>>>>')
 if 'PTD' in diagnostic:
+    ptd_left = 20
+    ptd_right = 470
     print('....Pulling data from PTD image')
     # plotting the full image
     fig, ax = plt.subplots()
     td.show_pxtd_image(directory+file) # this creates a full plot
 
     # depending on how many channels there are, we pull out the function that we want
+    lineouts = []
     if num_channels == 2: # usually @ 3.1 cm
         print('....Two channels extracted')
-        lineouts = td.pxtd_2ch_lineouts(directory + file, channel_width = 20)
+        raw_lineouts = td.pxtd_2ch_lineouts(directory + file, channel_width = 20)
     elif num_channels == 3: # usually @ 9.1 cm
         print('....Three channels extracted')
-        lineouts = td.pxtd_3ch_lineouts(directory + file, channel_width = 20)
+        raw_lineouts = td.pxtd_3ch_lineouts(directory + file, channel_width = 20)
+    
+    for lineout in raw_lineouts:
+        lineouts.append(lineout[ptd_left:ptd_right])
+
 
     # pulling the background lineout
-    bg_channel_index = 300
+    bg_channel_index = 280
     print('....Background channel extracted at channel {bg_channel_index}')
-    bg_lineout = td.pxtd_lineout(directory+file, bg_channel_index, channel_width = 20)
+    bg_lineout = td.pxtd_lineout(directory+file, bg_channel_index, channel_width = 20)[ptd_left:ptd_right]
     bg_lineout = signal.savgol_filter(bg_lineout, sg_len, sg_order) # smoothing the background
     time, centers, fid_lineout = td.get_pxtd_fid_timing(directory + file) # pulling the timing fiducials from the image. This is nominally always at the same location in the image. 
+    time = time[ptd_left:ptd_right]
+    fid_lineout = fid_lineout[ptd_left:ptd_right]
 
     # BACKGROUND ANALYSIS AND FITTING:
     # changing the left and right bounds of the background
@@ -183,13 +212,14 @@ if 'PTD' in diagnostic:
 
     plt.figure()
     plt.plot(bg_lineout, c = 'k',label = 'bg_smoothed')
-    plt.plot(np.arange(bg_left, bg_right), bg_lineout[bg_left:bg_right],c = 'red', label = 'bg_smoothed')
-    def bg_model(x, a, b, c, d):
-        return a*x**3 + b*x**2 +c*x + d
+    #plt.plot(np.arange(bg_left, bg_right), bg_lineout[bg_left:bg_right],c = 'red', label = 'bg_smoothed')
+    plt.title('Background lineout')
+    #def bg_model(x, a, b, c, d):
+    #    return a*x**3 + b*x**2 +c*x + d
 
-    bg_params, bg_cov = curve_fit(bg_model, np.arange(bg_left, bg_right), bg_lineout[bg_left:bg_right])
-    plt.plot(bg_model(np.arange(len(bg_lineout)), bg_params[0], bg_params[1], bg_params[2], bg_params[3]), label = 'bg_fit')
-    bg_lineout = bg_model(np.arange(len(bg_lineout)), bg_params[0], bg_params[1], bg_params[2], bg_params[3]) 
+    #bg_params, bg_cov = curve_fit(bg_model, np.arange(bg_left, bg_right), bg_lineout[bg_left:bg_right])
+    #plt.plot(bg_model(np.arange(len(bg_lineout)), bg_params[0], bg_params[1], bg_params[2], bg_params[3]), label = 'bg_fit')
+    #bg_lineout = bg_model(np.arange(len(bg_lineout)), bg_params[0], bg_params[1], bg_params[2], bg_params[3]) 
         
 elif 'NTD' in diagnostic:
     sg_len = 20 # savitsky golay parameter
@@ -225,7 +255,7 @@ for lineout in lineouts:
         print('....No background subtraction')
     if 'PTD' in diagnostic:
         print('....correcting for ptd notch')
-        lineout /= corrections
+        lineout /= corrections[ptd_left:ptd_right]
 # pulling in the p510 data that has already been analyzed
 with open('../results/p510_summary.txt', 'r') as p510_file:
     print('....P510 data extraction beginning')
@@ -236,16 +266,6 @@ with open('../results/p510_summary.txt', 'r') as p510_file:
             t0_minus_fid0 = float(line['t0-fid0']) # getting the time between the first fiducial and the 2% rise time of the laser
 
 
-'''
-with open('ptd_timing_report_mi22a.txt', 'a') as time_file:
-    line = f'{shot_num}'
-    for center in centers:
-        line += (str(center) + ', ') 
-    for center in centers:
-        line += (str(time[center]) + ', ') 
-    line += '\n'
-    time_file.writelines(line)
-'''
 # getting the real time axis (corrected for the delays but not the tof)
 print(f't0-fid0: {t0_minus_fid0}')
 if diagnostic =='PTD':
@@ -255,6 +275,12 @@ if diagnostic =='NTD':
     print('....time analysis for NTD')
     time = time - t0_minus_fid0 + float(ntd_delay_dict[delay_box.strip(' ')]) + ntd_calib_delay# p510 first fiducial with teh 1 ns trim fiber in place
 # TODO get the T0 from the laser in here!!!
+
+
+
+
+
+
 
 # plotting the time traces for each of the channels
 print('....plotting the time traces')
@@ -277,6 +303,12 @@ data_array = np.array(lineouts)
 time_full = np.array(time) 
 time = time[::]
 
+
+
+
+
+
+
 # pulling each of the channels
 channel_data = []
 for channel in range(data_array.shape[0]):
@@ -285,18 +317,23 @@ for channel in range(data_array.shape[0]):
 
 # plotting the data for each channel:
 fig, ax = plt.subplots()
-for channel in channel_data:
-    ax.plot(time, channel)
+for count,channel in enumerate(channel_data):
+    ax.plot(time, channel, label = count)
 ax.set_yscale('log')
 ax.set_xlabel('time (ps)')
 ax.set_ylabel('log(channel counts)')
+ax.legend()
+
+
+
 
 fig, ax = plt.subplots()
-for channel in channel_data:
-    ax.plot(time, channel)
+for count,channel in enumerate(channel_data):
+    ax.plot(time, channel, label = count)
 ax.set_yscale('linear')
 ax.set_xlabel('time (ps)')
 ax.set_ylabel('channel counts')
+ax.legend()
 
 # getting the normalized versions of each channel:
 channel_norms = []
@@ -333,7 +370,7 @@ else:
     c_ls, _, _, _ = sl.lstsq(IRF, c_smooth)
     ax.plot(c_noisy)
     ax.plot(c_smooth)
-plt.show()
+#plt.show()
 # these variables will end up holding the deconvolution of the scintillator response
 channel_ls_list = []
 channel_averages = []
@@ -343,7 +380,8 @@ channel_peak_times = []
 channel_reactions = []
 channel_xi2 = []
 
-fig, ax = plt.subplots()
+fig, ax = plt.subplots(sharex = True, sharey = True)
+plt.subplots_adjust(wspace=0, hspace=0)
 
 for channel in range(num_channels):
     channel_reactions.append([])
@@ -351,7 +389,7 @@ for channel in range(num_channels):
     channel_peak_times.append([])
     channel_xi2.append([])
     for i in tqdm(range(runs)):
-        c_noisy = channel_norms[channel] + np.random.laplace(size = channel_norms[channel].size, scale = 1*variances[channel]**.5)
+        c_noisy = channel_norms[channel] + np.random.laplace(size = channel_norms[channel].size, scale = variances[channel]**.5)
         c_smooth = signal.savgol_filter(c_noisy, sg_len, sg_order)
         c_ls, res, _, _ = sl.lstsq(IRF, c_smooth)
         #def loss(x):
@@ -363,7 +401,7 @@ for channel in range(num_channels):
         ax.plot(np.matmul(IRF, c_ls), c = 'black', alpha = .2) 
 
     channel_averages.append(np.sum(np.array(channel_ls_list)[channel, : ,:], axis = 0)/runs) # taking the average of all of runs
-    ax.plot(np.matmul(IRF, channel_averages[-1]), linestyle = 'None', marker = 'o', color = 'blue')
+    ax.plot(np.matmul(IRF, channel_averages[-1]), linestyle = 'None', marker = 'o', color = 'blue', markersize = 2)
     #channel_averages.append(np.sum(np.array(channel_ls_list)[channel, : ,:] * np.expand_dims(np.array(channel_xi2)[channel,:]**-1 + .001, axis = 1), axis = 0)/runs) # taking the average of all of runs
     channel_peak_inds.append(find_peaks(channel_averages[-1], height = 0.3 * np.max(channel_averages[-1]), distance = 50)[0]) # adding the most recent list of peaks
     print(channel_peak_inds)
@@ -373,24 +411,28 @@ for channel in range(num_channels):
 
 # plotting the deconvolutions for the scintillator and camera responses:
         
-fig, ax = plt.subplots(num_channels,1)
+fig, ax = plt.subplots(num_channels,1, sharex = True, sharey = True)
+plt.subplots_adjust(wspace=0, hspace=0)
+
 if num_channels >1:
     for channel in range(num_channels):
         ax[channel].plot(time, channel_norms[channel], zorder  = 10, color ='black', linestyle = '--')
-        ax[channel].plot(time, channel_averages[channel], zorder = 10, color = 'maroon')
-        ax[channel].fill_between(time, channel_averages[channel] - channel_stds[channel], channel_averages[channel] + channel_stds[channel], alpha = .1, zorder = 10, color = 'maroon')
-        ax[channel].vlines(channel_peak_times[channel], ymin = 0, ymax = channel_averages[channel].max(), color = 'black', linestyle = '--')
+        ax[channel].plot(time, channel_averages[channel]/channel_averages[channel].max(), zorder = 10, color = 'maroon')
+        ax[channel].fill_between(time, (channel_averages[channel] - channel_stds[channel])/channel_averages[channel].max(), (channel_averages[channel] + channel_stds[channel])/channel_averages[channel].max(), alpha = .1, zorder = 10, color = 'maroon')
+        ax[channel].vlines(channel_peak_times[channel], ymin = 0, ymax = 1, color = 'black', linestyle = '--')
 
         # writing the scintillator deconvolutions to a text file
         A = np.concatenate((np.expand_dims(time, 0),np.expand_dims(channel_averages[channel], 0), np.expand_dims(channel_averages[channel] - channel_stds[channel], 0), np.expand_dims(channel_averages[channel] + channel_stds[channel], 0)), axis = 0)
         np.savetxt(f'../results/csv_output/deconvolution_data_IRFonly_{shotnum}_{diagnostic}_channel_{channel}.csv', A.T)
+        ax[channel].set_ylim([0,1])
+        
 else: 
     ax.plot(time, channel_norms[channel], zorder  = 10, color ='black', linestyle = '--')
     ax.plot(time, channel_averages[channel], zorder = 10, color = 'maroon')
     ax.fill_between(time, channel_averages[channel] - channel_stds[channel], channel_averages[channel] + channel_stds[channel], alpha = .1, zorder = 10, color = 'maroon')
     ax.vlines(channel_peak_times[channel], ymin = 0, ymax = channel_averages[channel].max(), color = 'black', linestyle = '--')
 
-plt.savefig(f'../results/csv_output/deconvolution_plot_IRFonly_{shotnum}_{diagnostic}_channel_{channel}.png')
+plt.savefig(f'../results/plots/deconvolution_plot_IRFonly_{shotnum}_{diagnostic}.png')
 
 ### TOF CORRECTIONS ####################################################################################################################################################
 # Logic here: we have called out all of the reactions that might show up on each channel. We should be able to forward model each of their respective emissions         
@@ -428,31 +470,19 @@ for channel in range(num_channels):
         try:
             params, covs = curve_fit(gaussian, xdata = time[peak_ind - half_window:peak_ind + half_window], ydata = channel_averages[channel][peak_ind - half_window:peak_ind + half_window], sigma = channel_stds[channel][peak_ind - half_window:peak_ind + half_window], p0 = [5, time[peak_ind], 150], maxfev = 100000)#, p0 = [1, time[peak_ind], 150]
             print(params)
-            ax[channel].plot(time, gaussian(time, params[0], params[1], params[2]), color = 'cyan')
+            #ax[channel].plot(time, gaussian(time, params[0], params[1], params[2]), color = 'cyan')
+            #ax[channel].plot(time, gaussian(time, 1, params[1], params[2]), color = 'cyan')
         except(ValueError):
             pass
         
-    
-#plt.show()
-'''
-# we can find a really rough bang time if we assume that all of the peak emissions happen tof before the peak oberved signal
-rough_BTs = []
-for channel in range(num_channels):
-    channel_tofs = [tofs_dict[r] for r in channel_reactions[channel]] # getting tof for each reaction
-    ordered_tofs = natsorted(channel_tofs)
-    print(f'ordered tofs: {ordered_tofs}')
-    print(f'channel peak times: {channel_peak_times}')
-    rough_BTs.append(np.array(channel_peak_times[channel]) - np.array(ordered_tofs)) # estimating the bang time by just assuming that we can subtract off the tof and call it good (very rough)
 
-print(f'Rough bang times: {rough_BTs}')
-rough_BT_overall = rough_BTs[0][0]
-'''
-# now we want to try and fit an emission history to each of the histories using the constraint that the emission should all happen within 
-# the max spread of the rough bang times that we found above
+
+
+
 
 # we are first going to interpolate every channels signal to a regular grid
-time_res = 10
-buffer = 0 # this is a buffer on the left so the the initial gaussian is not cut off
+time_res = 13
+buffer = 500 # this is a buffer on the left so the the initial gaussian is not cut off
 time_interp = np.linspace(0 - buffer, time.max() + buffer, int((time.max() + buffer)/time_res))
 time_interp = np.linspace(0 - buffer, max_time_allowed, int((max_time_allowed + buffer)/time_res))
 channels_interp = []
@@ -475,7 +505,7 @@ for channel in range(num_channels):
     tof_matrices.append([])
     for reaction in channel_reactions[channel]:
         if 'xray' not in reaction:
-            spectra[-1].append(td.synth_spec_gauss(reaction, reaction_temps[reaction], num_particles = 20000)[0])
+            spectra[-1].append(td.synth_spec_gauss(reaction, reaction_temps[reaction], num_particles = 1000000)[0])
             time_trace = td.time_trace_at_dist(dist, reaction, spectra[-1][-1], birth_time = 0, time_bins = time_interp - np.min(time_interp))[1]
         else:
             time_trace = td.time_trace_at_dist(dist, reaction, np.array([1]), birth_time = 0, time_bins = time_interp - np.min(time_interp))[1]
@@ -486,8 +516,8 @@ for channel in range(num_channels):
 if plotting:
     fig, ax = plt.subplots()
     for channel in range(num_channels):
-        for trace in time_traces[channel]:
-            ax.plot(time_interp[:-1], trace)
+        for count, trace in enumerate(time_traces[channel]):
+            ax.plot(time_interp[:-1], trace, label = channel_reactions[channel][count])
 #fig, ax = plt.subplots()
 #ax.pcolormesh(tof_matrices[1][-1])
 #ax.set_title('tof_matrix')
@@ -505,14 +535,27 @@ for channel in range(num_channels):
 fig, ax = plt.subplots()
 for channel in range(num_channels):
     for rind, reaction in enumerate(channel_reactions[channel]):
-        ax.plot(time_interp, emission_histories[channel][rind], label = reaction, linestyle = '--')
-        ax.plot(time_interp, np.matmul( tof_matrices[channel][rind], emission_histories[channel][rind]),label = reaction)
+        ax.plot(time_interp, emission_histories[channel][rind]/emission_histories[channel][rind], label = reaction, linestyle = '--')
+        
+        fit = np.matmul(tof_matrices[channel][rind], emission_histories[channel][rind])
+        ax.plot(time_interp,fit/fit.max(),label = reaction)
     ax.legend()
-'''j
-sg_len = 30 # savitsky golay parameter, 10 
-sg_order = 2
-runs = 20
-'''
+    ax.set_title('Fit Emission Histories')
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 reaction_inds = []
 reaction_signals = []
 decon_noise = (channels_interp[channel] - signal.savgol_filter(channels_interp[channel], sg_len, sg_order))
@@ -584,35 +627,10 @@ ehist_unc_full = []
 tof_decons = []
 full_decons = []
 
-'''
-for channel in range(num_channels):
-    ehists.append([])
-    ehist_unc.append([])
-    tof_decons.append([])
-    full_decons.append([])
-    for rind, reaction in enumerate(channel_reactions[channel]):
-        tof_decons[-1].append([])
-        full_decons[-1].append([])
-        #decon_mat = nd.gaussian_filter(tof_matrices[channel][rind], 40/(2.355*time_res), axes = 0)
-        for run in tqdm(range(runs)):
-            try:
-                #noise = np.random.normal(loc = 0 , scale = decon_noise_std, size = time_interp.size)
-                #noise = np.random.normal(loc = 0 , scale = 1, size = time_interp.size)*smoothed_noise_std
-                noise = np.random.normal(loc = 0 , scale = 1, size = time_interp.size)*4*smoothed_noise_std
-                smoothed_signal = signal.savgol_filter(reaction_signals[channel][rind] + noise, sg_len, sg_order)
-                #decon_mat = np.matmul(pfor.broadening_matrix(time_interp, 40/2.355)[0], tof_matrices[channel][rind])
-                tof_decons[-1][-1].append(so.nnls(tof_matrices[channel][rind], smoothed_signal)[0])
-                #tof_decons[-1][-1].append(sl.lstsq(tof_matrices[channel][rind], smoothed_signal)[0])
-            except(np.linalg.LinAlgError):
-                pass
-            except(RuntimeError):
-                pass
-        ehists[-1].append(np.average(np.array(tof_decons[channel][rind]), axis = 0))
-        ehist_unc[-1].append(np.std(np.array(tof_decons[channel][rind]), axis = 0))
-        #ehists_full[-1].append(np.average(np.array(full_decons[channel][rind]), axis = 0))
-        #ehist_unc_full[-1].append(np.std(np.array(full_decons[channel][rind]), axis = 0))
-    #ehists[-1].append(so.nnls(tof_matrices[channel][rind], signal.savgol_filter(reaction_signals[channel][rind], 20, 3))[0])
-'''
+
+
+
+
 # DECONVOLUTION OF THE TOF RESPONSE: 
 
 for channel in range(num_channels):
@@ -631,8 +649,8 @@ for channel in range(num_channels):
                 #noise = np.random.normal(loc = 0 , scale = decon_noise_std, size = time_interp.size)
                 #noise = np.random.normal(loc = 0 , scale = 1, size = time_interp.size)*smoothed_noise_std
 
-                # ADDING NOISE THAT MATCHES NOISE IN SIGNAL (4*SIGMA)
-                noise = np.random.laplace(loc = 0 , scale = 1, size = time_interp.size)*4*smoothed_noise_std * reaction_filter
+                # ADDING NOISE THAT MATCHES NOISE IN SIGNAL (SIGMA)
+                noise = np.random.laplace(loc = 0 , scale = 1, size = time_interp.size)*smoothed_noise_std * reaction_filter
                 smoothed_signal = signal.savgol_filter(reaction_signals[channel][rind] + noise, sg_len, sg_order)
                 #decon_mat = np.matmul(pfor.broadening_matrix(time_interp, 40/2.355)[0], tof_matrices[channel][rind])
                 #tof_decons[-1][-1].append(so.nnls(tof_matrices[channel][rind], smoothed_signal)[0])
@@ -664,7 +682,7 @@ general_reactions = ['DTn', 'DDn', 'D3Hep', 'xray']
 general_colors = ['#1f77b4', '#2ca02c', '#ff7f0e', 'black']
 color_dict = dict(zip(general_reactions, general_colors))
 
-reaction_ignore_list = []
+reaction_ignore_list = ['DDn']
 # plotting the deconvolved reaction histories
 fig, ax = plt.subplots()
 fig2, ax2 = plt.subplots()
@@ -702,8 +720,15 @@ for channel in range(num_channels):
     for rind, reaction in enumerate(channel_reactions[channel]):
         A = np.concatenate((np.expand_dims(time_interp, 0),np.expand_dims(ehists[channel][rind], 0), np.expand_dims(ehists[channel][rind] - ehist_unc[channel][rind], 0), np.expand_dims(ehists[channel][rind] + ehist_unc[channel][rind], 0)), axis = 0)
         np.savetxt(f'../results/csv_output/deconvolution_data_{shotnum}_{diagnostic}_channel_{channel}_{reaction}.csv', A.T)
- 
-plt.savefig(f'../results/plots/final_deconvolution_{diagnostic}_{shotnum}.png')
+
+# saving the image file:
+if reaction_ignore_list ==[]:
+    plt.savefig(f'../results/plots/final_deconvolution_{diagnostic}_{shotnum}.png')
+else:
+    rs = ''
+    for reaction in reaction_ignore_list:
+        rs += reaction
+    plt.savefig(f'../results/plots/final_deconvolution_{diagnostic}_{shotnum}_ignored{rs}.png')
 
 
 

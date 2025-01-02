@@ -5,7 +5,7 @@
 import scipy.linalg as sl
 import numpy as np
 import emcee
-import plasma_analysis.tdstreak as td
+import tdstreak as td
 import os
 import matplotlib.pyplot as plt
 import scipy.ndimage as nd
@@ -181,7 +181,7 @@ if 'PTD' in diagnostic:
     print('....Pulling data from PTD image')
     # plotting the full image
     fig, ax = plt.subplots()
-    td.show_pxtd_image(directory+file) # this creates a full plot
+    td.show_pxtd_image(directory+file, scaling = 'log') # this creates a full plot
 
     # depending on how many channels there are, we pull out the function that we want
     lineouts = []
